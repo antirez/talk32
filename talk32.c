@@ -237,15 +237,12 @@ void repl_command(int devfd) {
             /* Usually we ready each byte as user hits each keystroke. */
             if (nread == 1) {
                 static char last[4]; // Remember last N chars entered by user.
-                const char *stop1 = "#~~\n"; // Must be sizeof(last) chars.
-                const char *stop2 = "#~~\r"; // Must be sizeof(last) chars.
+                const char *stop = "~~.."; // Must be sizeof(last) chars.
 
-                /* If we detect the ..!! <enter> sequence, stop the
-                 * program. */
+                /* If we detect the stop sequence, stop the program. */
                 memmove(last,last+1,sizeof(last)-1);
                 last[sizeof(last)-1] = buf[0];
-                if (memcmp(last,stop1,sizeof(last)) == 0 ||
-                    memcmp(last,stop2,sizeof(last)) == 0 ||
+                if (memcmp(last,stop,sizeof(last)) == 0 ||
                     buf[0] == 0x18 /* CTRL+X */ )
                 {
                     exit(0);
