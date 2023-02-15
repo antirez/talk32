@@ -13,6 +13,11 @@
 #include <unistd.h>
 #include <sys/select.h>
 
+#define CTRL_A "\x01"   // Enter raw REPL mode.
+#define CTRL_B "\x02"   // Exit raw REPL mode.
+#define CTRL_C "\x03"   // Stop program.
+#define CTRL_D "\x04"   // Soft restart device.
+
 /* We need to rememver the terminal setup when in REPL mode. And at exit
  * we need to restore them, or the user terminal would be left in a bad
  * state and would require a manual "reset". */
@@ -61,7 +66,7 @@ int setup_serial_port(int fd, int speed) {
  * If exit_on_error is true, the function just prints an error and
  * exits. Most of the times this little utility has very little to
  * recover from errors. */
-size_t write_serial(int fd, char *buf, size_t len, int exit_on_error) {
+size_t write_serial(int fd, const char *buf, size_t len, int exit_on_error) {
     size_t left = len;
     while(left) {
         ssize_t nwritten = write(fd,buf,left);
@@ -177,13 +182,17 @@ int open_esp32(char *dev) {
 /* REPL mode. Read from both the terminal and the user. Writes what
  * we get from the stdin to the serial, and writes what we get
  * from the serial to stdout. */
-void repl(int devfd) {
+void repl_command(int devfd) {
     fd_set rset;
     FD_ZERO(&rset);
 
-    printf("Entering REPL mode: type \"#~~\" + <enter> to exit.\n");
+    printf("Entering REPL mode: type \"~~..\" or CTRL+X to exit.\n");
 
     enable_tty_raw_mode(STDIN_FILENO);
+
+    /* The device may be in raw REPL mode from the last interaction.
+     * Let's put it back into normal mode. */
+    write_serial(devfd,CTRL_B,1,1);
 
     while(1) {
         FD_SET(devfd, &rset);
@@ -236,7 +245,8 @@ void repl(int devfd) {
                 memmove(last,last+1,sizeof(last)-1);
                 last[sizeof(last)-1] = buf[0];
                 if (memcmp(last,stop1,sizeof(last)) == 0 ||
-                    memcmp(last,stop2,sizeof(last)) == 0)
+                    memcmp(last,stop2,sizeof(last)) == 0 ||
+                    buf[0] == 0x18 /* CTRL+X */ )
                 {
                     exit(0);
                 }
@@ -246,24 +256,128 @@ void repl(int devfd) {
     }
 }
 
+/* Set the device in MicroPython raw REPL mode. */
+void enter_raw_repl(int devfd) {
+    write_serial(devfd,"\n" CTRL_C,2,1);
+    write_serial(devfd,CTRL_C,1,1);
+    write_serial(devfd,CTRL_A,1,1);
+}
+
+/* Read what is pending in the device output buffer. */
+void consume_pending_output(int devfd) {
+    char buf[1024];
+    while(read_serial(devfd,buf,sizeof(buf)-1,0,1) != 0);
+}
+
+/* Consume the output till the given string is encountered
+ * at *the end* of the output from the serial. */
+void consume_until_match(int devfd, char *match) {
+    char buf[1024];
+    char *p = buf;
+    size_t len = 0;
+    size_t matchlen = strlen(match);
+    size_t nread;
+    while(1) {
+        nread = read_serial(devfd,p,sizeof(buf)-len,0,1);
+        if (nread <= 0) {
+            usleep(10000);
+            continue;
+        }
+
+        len += nread;
+        p += nread;
+        if (len >= matchlen && memcmp(p-matchlen,match,matchlen) == 0) return;
+
+        /* If we consumed all the buffer, we need to restart with
+         * enough bytes at the start to be able to match the string. */
+        if (len == sizeof(buf)) {
+             len = matchlen-1;
+             memmove(buf,p-len,len);
+             p = buf+len;
+        }
+    }
+}
+
+/* Show the program output, returning after a few read timeouts. */
+void show_program_output(int devfd) {
+    char buf[1024];
+    char last[2] = {0};
+    ssize_t nread;
+    int timeouts_max = 10;
+    while(1) {
+        nread = read_serial(devfd,buf,sizeof(buf)-1,0,1);
+
+        /* Try to remember the last two bytes received: when we get
+         * the first timeout, if they are "\x04>" then it's the RAW
+         * REPL prompt, and we can return ASAP, avoiding any delay. */
+        if (nread >= 2) {
+            last[0] = buf[nread-2];
+            last[1] = buf[nread-1];
+        } else if (nread == 1) {
+            last[0] = last[1];
+            last[1] = buf[0];
+        }
+
+        /* Avoid showing the raw prompt to the user. */
+        if (last[0] == 0x04 && last[1] == '>' && nread >= 2) nread -= 2;
+
+        if (nread) {
+            write(STDOUT_FILENO,buf,nread);
+        } else {
+            if (last[0] == 0x04 && last[1] == '>') return;
+            if (timeouts_max-- == 0) return;
+            usleep(100000);
+        }
+    }
+}
+
+/* Implements the "ls" command -- list files. */
+void ls_command(int devfd, const char *path) {
+    enter_raw_repl(devfd);
+    usleep(10000);
+    consume_pending_output(devfd);
+    char buf[1024];
+    const char *program =
+        "import os\n"
+        "for f in os.listdir(\"%s\"):\n"
+        "    print(f + ' -- ' + str((os.stat(f)[6])))\n"
+        CTRL_D;
+    size_t proglen = snprintf(buf,sizeof(buf),program,path);
+    write_serial(devfd,buf,proglen,1);
+    consume_until_match(devfd,"OK");
+    show_program_output(devfd);
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr,"Usage: %s /dev/... <command> <args>\n"
-                       "Available commands:\n"
-                        "    repl\n"
-                        "    put <filename>\n"
-                        "    get <filename>\n"
-                        "    reset\n", argv[0]);
+           "Available commands:\n"
+            "    repl            -- Start the MicroPython REPL\n"
+            "    ls | ls <dir>   -- Show files inside the device\n"
+            "    put <filename>  -- Upload filename to device\n"
+            "    get <filename>  -- Download filename from device\n"
+            "    reset           -- Soft reset the device\n",
+            argv[0]);
         exit(1);
     }
 
     int fd = open_esp32(argv[1]);
 
-    if (!strcasecmp(argv[2],"reset")) {
-        char *cmd = "print(5)\r\n";
+    /* Skip program name and device port. */
+    argv += 2;
+    argc -= 2;
+
+    /* Parse arguments. */
+    if (!strcasecmp(argv[0],"reset")) {
+        char *cmd = CTRL_C "\r\n" CTRL_C CTRL_D;
         write_serial(fd,cmd,strlen(cmd),1);
-    } else if (!strcasecmp(argv[2],"repl")) {
-        repl(fd);
+    } else if (!strcasecmp(argv[0],"repl")) {
+        repl_command(fd);
+    } else if (!strcasecmp(argv[0],"ls") && (argc == 1 || argc == 2)) {
+        if (argc == 1)
+            ls_command(fd,".");
+        else
+            ls_command(fd,argv[1]);
     } else {
         fprintf(stderr,"Unsupported command or wrong number of arguments\n");
         exit(1);
