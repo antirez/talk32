@@ -181,6 +181,8 @@ void repl(int devfd) {
     fd_set rset;
     FD_ZERO(&rset);
 
+    printf("Entering REPL mode: type \"#~~\" + <enter> to exit.\n");
+
     enable_tty_raw_mode(STDIN_FILENO);
 
     while(1) {
@@ -221,6 +223,23 @@ void repl(int devfd) {
             if (nread == -1) {
                 perror("Reading from STDIN");
                 exit(1);
+            }
+
+            /* Usually we ready each byte as user hits each keystroke. */
+            if (nread == 1) {
+                static char last[4]; // Remember last N chars entered by user.
+                const char *stop1 = "#~~\n"; // Must be sizeof(last) chars.
+                const char *stop2 = "#~~\r"; // Must be sizeof(last) chars.
+
+                /* If we detect the ..!! <enter> sequence, stop the
+                 * program. */
+                memmove(last,last+1,sizeof(last)-1);
+                last[sizeof(last)-1] = buf[0];
+                if (memcmp(last,stop1,sizeof(last)) == 0 ||
+                    memcmp(last,stop2,sizeof(last)) == 0)
+                {
+                    exit(0);
+                }
             }
             write_serial(devfd,buf,nread,1);
         }
