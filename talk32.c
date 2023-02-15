@@ -349,14 +349,15 @@ void ls_command(int devfd, const char *path) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) {
+    if (argc < 3 || !strcmp(argv[2],"help")) {
         fprintf(stderr,"Usage: %s /dev/... <command> <args>\n"
            "Available commands:\n"
             "    repl            -- Start the MicroPython REPL\n"
             "    ls | ls <dir>   -- Show files inside the device\n"
             "    put <filename>  -- Upload filename to device\n"
             "    get <filename>  -- Download filename from device\n"
-            "    reset           -- Soft reset the device\n",
+            "    reset           -- Soft reset the device\n"
+            "    help            -- Shows this help\n",
             argv[0]);
         exit(1);
     }
