@@ -107,26 +107,47 @@ size_t read_serial(int fd, char *buf, size_t len, int block, int exit_on_error) 
     return nread;
 }
 
-int main() {
-    char *device = "/dev/tty.usbmodem54790294581";
+/* Open and configure the serial port to talk with the ESP32.
+ * Return the file descriptor. On error exits. */
+int open_esp32(char *dev) {
     int fd;
-
-    fd = open(device, O_RDWR|O_NOCTTY|O_SYNC|O_NONBLOCK);
+    fd = open(dev, O_RDWR|O_NOCTTY|O_SYNC|O_NONBLOCK);
     if (fd < 0) {
-        printf("Error opening %s: %s\n", device, strerror(errno));
-        return -1;
+        printf("Error opening %s: %s\n", dev, strerror(errno));
+        exit(1);
     }
-
     setup_serial_port(fd, B115200);
-    char *cmd = "print(5)\r\n";
-    write_serial(fd,cmd,strlen(cmd),1);
+    return fd;
+}
 
-    while(1) {
-        char buf[256];
-        ssize_t nread = read_serial(fd,buf,sizeof(buf),0,1);
-        if (nread != 0)
-            printf("%.*s", (int)nread, buf);
-        else
-            usleep(10000);
+int main(int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr,"Usage: %s /dev/... <command> <args>\n"
+                       "Available commands:\n"
+                        "    repl\n"
+                        "    put <filename>\n"
+                        "    get <filename>\n"
+                        "    reset\n", argv[0]);
+        exit(1);
     }
+
+    int fd = open_esp32(argv[1]);
+
+    if (!strcasecmp(argv[2],"reset")) {
+        char *cmd = "print(5)\r\n";
+        write_serial(fd,cmd,strlen(cmd),1);
+    } else if (!strcasecmp(argv[2],"repl")) {
+        while(1) {
+            char buf[256];
+            ssize_t nread = read_serial(fd,buf,sizeof(buf),0,1);
+            if (nread != 0)
+                printf("%.*s", (int)nread, buf);
+            else
+                usleep(10000);
+        }
+    } else {
+        fprintf(stderr,"Unsupported command or wrong number of arguments\n");
+        exit(1);
+    }
+    return 0;
 }
