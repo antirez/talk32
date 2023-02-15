@@ -11,6 +11,13 @@
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
+#include <sys/select.h>
+
+/* We need to rememver the terminal setup when in REPL mode. And at exit
+ * we need to restore them, or the user terminal would be left in a bad
+ * state and would require a manual "reset". */
+struct termios orig_termios; /* In order to restore at exit.*/
+int raw_mode_is_set = 0;
 
 /* Setup the file descriptor 'fd' to be used as a serial port
  * with the usual settings (that is what works with ESP32) and
@@ -107,6 +114,53 @@ size_t read_serial(int fd, char *buf, size_t len, int block, int exit_on_error) 
     return nread;
 }
 
+/* Restore normal terminal setup. */
+void disable_raw_mode(void) {
+    /* Don't even check the return value as it's too late. */
+    if (raw_mode_is_set &&
+        tcsetattr(STDIN_FILENO,TCSAFLUSH,&orig_termios) != -1)
+    {
+        raw_mode_is_set = 0;
+    }
+}
+
+/* Put the terminal the user is typing from in RAW mode. This
+ * is useful for the REPL, where we want to transfer each byte
+ * received as it is to the device. */
+int enable_tty_raw_mode(int fd) {
+    struct termios raw;
+
+    if (!isatty(fd)) goto fatal;
+    if (tcgetattr(fd,&orig_termios) == -1) goto fatal;
+
+    raw = orig_termios;  /* modify the original mode */
+    /* input modes: no break, no CR to NL, no parity check, no strip char,
+     * no start/stop output control. */
+    raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    /* output modes - disable post processing */
+    raw.c_oflag &= ~(OPOST);
+    /* control modes - set 8 bit chars */
+    raw.c_cflag |= (CS8);
+    /* local modes - choing off, canonical off, no extended functions,
+     * no signal chars (^Z,^C) */
+    raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+    /* control chars - set return condition: min number of bytes and timer.
+     * We want read to return every single byte, without timeout. */
+    raw.c_cc[VMIN] = 1; raw.c_cc[VTIME] = 0; /* 1 byte, no timer */
+
+    /* put terminal in raw mode after flushing */
+    if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
+    if (!raw_mode_is_set) {
+        atexit(disable_raw_mode);
+        raw_mode_is_set = 1;
+    }
+    return 0;
+
+fatal:
+    errno = ENOTTY;
+    return -1;
+}
+
 /* Open and configure the serial port to talk with the ESP32.
  * Return the file descriptor. On error exits. */
 int open_esp32(char *dev) {
@@ -118,6 +172,59 @@ int open_esp32(char *dev) {
     }
     setup_serial_port(fd, B115200);
     return fd;
+}
+
+/* REPL mode. Read from both the terminal and the user. Writes what
+ * we get from the stdin to the serial, and writes what we get
+ * from the serial to stdout. */
+void repl(int devfd) {
+    fd_set rset;
+    FD_ZERO(&rset);
+
+    enable_tty_raw_mode(STDIN_FILENO);
+
+    while(1) {
+        FD_SET(devfd, &rset);
+        FD_SET(STDIN_FILENO, &rset);
+        struct timeval tv = {.tv_sec = 1, .tv_usec = 0};
+
+        int maxfd = devfd;
+        if (STDIN_FILENO > maxfd) maxfd = STDIN_FILENO;
+        maxfd++;
+
+        int events = select(maxfd, &rset, NULL, NULL, &tv);
+        if (events == -1) {
+            if (errno == EAGAIN) continue;
+            perror("select");
+            exit(1);
+        }
+
+        char buf[1024];
+        ssize_t nread;
+        if (FD_ISSET(devfd,&rset)) {
+            nread = read_serial(devfd,buf,sizeof(buf)-1,0,1);
+            if (nread > 0) {
+                buf[nread] = 0;
+                /* We use a trick here... when the user types exit
+                 * on the shell, we trap the MicroPython error message
+                 * and exit the program. */
+                char *exit_error = "name 'exit' isn't defined";
+                if (strstr(buf,exit_error) != NULL) {
+                    disable_raw_mode();
+                    exit(0);
+                }
+            }
+            if (nread != 0) write(STDOUT_FILENO,buf,nread);
+        } else if (FD_ISSET(STDIN_FILENO,&rset)) {
+            nread = read(STDIN_FILENO,buf,sizeof(buf));
+            if (nread == 0) exit(0); // EOF
+            if (nread == -1) {
+                perror("Reading from STDIN");
+                exit(1);
+            }
+            write_serial(devfd,buf,nread,1);
+        }
+    }
 }
 
 int main(int argc, char **argv) {
@@ -137,14 +244,7 @@ int main(int argc, char **argv) {
         char *cmd = "print(5)\r\n";
         write_serial(fd,cmd,strlen(cmd),1);
     } else if (!strcasecmp(argv[2],"repl")) {
-        while(1) {
-            char buf[256];
-            ssize_t nread = read_serial(fd,buf,sizeof(buf),0,1);
-            if (nread != 0)
-                printf("%.*s", (int)nread, buf);
-            else
-                usleep(10000);
-        }
+        repl(fd);
     } else {
         fprintf(stderr,"Unsupported command or wrong number of arguments\n");
         exit(1);
