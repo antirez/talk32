@@ -429,8 +429,8 @@ void put_command(int devfd, const char *path) {
      * Note that a byte, if quoted, becomes \xff, four bytes, so
      * our 'bin' buffer is 4 times bigger, and has some extra space
      * for null term and "b'" and final "'". */
-    unsigned char buf[256];
-    char bin[sizeof(buf)*4+3];
+    unsigned char buf[64];
+    char bin[sizeof(buf)*4+4];
     size_t nread;
     while((nread = read(fd,buf,sizeof(buf))) > 0) {
         char *p = bin;
@@ -440,6 +440,10 @@ void put_command(int devfd, const char *path) {
             const char *hex = "0123456789abcdef";
             if (isprint(buf[j]) && buf[j] != '\'' && buf[j] != '\\') {
                 *p++ = buf[j];
+            } else if (buf[j] == '\'' || buf[j] == '\\') {
+                p[0] = '\\';
+                p[1] = buf[j];
+                p += 2;
             } else {
                 p[0] = '\\'; /* \x.. */
                 p[1] = 'x';
@@ -449,11 +453,13 @@ void put_command(int devfd, const char *path) {
             }
         }
         *p++ = '\'';
+        *p++ = '\n';
 
         /* Write the one-liner needed to push the binary buffer
          * into the file. */
         const char *write_program = "f.write(";
         write_serial(devfd,write_program,strlen(write_program),1);
+        // print_hex_buf("BIN",bin,(p-bin));
         write_serial(devfd,(char*)bin,p-bin,1);
         write_serial(devfd,")\n" CTRL_D,3,1);
         consume_until_match(devfd,CTRL_D CTRL_D ">");
