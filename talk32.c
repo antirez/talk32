@@ -502,6 +502,37 @@ void rm_command(int devfd, const char *path) {
     exit_raw_repl(devfd);
 }
 
+/* Transfer a local file into the device and executes it. */
+void run_command(int devfd, const char *path) {
+    /* Open local file and upload to device. */
+    int fd = open(path,O_RDONLY);
+    if (fd == -1) {
+        perror("Opening local file for execution");
+        exit(1);
+    }
+
+    enter_raw_repl(devfd);
+    consume_pending_output(devfd);
+
+    char buf[1024];
+    ssize_t nread;
+    while((nread = read(fd,buf,sizeof(buf))) > 0)
+        write_serial(devfd,buf,nread,1);
+
+    if (nread == -1) {
+        perror("Reading from local file for execution");
+        exit(1);
+    }
+
+    /* Program transferred, hopefully -- exeute it. */
+    write_serial(devfd,CTRL_D,1,1); // Ctrl+D will execute the program
+    read_serial(devfd,buf,2,1,1); // Consume "OK"
+    show_program_output(devfd);
+
+    exit_raw_repl(devfd);
+    close(fd);
+}
+
 int main(int argc, char **argv) {
     if (argc < 3 || !strcmp(argv[2],"help")) {
         fprintf(stderr,"Usage: %s /dev/... <command> <args>\n"
@@ -510,7 +541,8 @@ int main(int argc, char **argv) {
             "    ls | ls <dir>   -- Show files inside the device\n"
             "    put <filename>  -- Upload filename to device\n"
             "    get <filename>  -- Download filename from device\n"
-            "    rm <filename>   -- Remove filename from device\n"
+            "    rm  <filename>  -- Remove filename from device\n"
+            "    run <filename>  -- Run local Python file on the device\n"
             "    reset           -- Soft reset the device\n"
             "    help            -- Shows this help\n",
             argv[0]);
@@ -541,6 +573,8 @@ int main(int argc, char **argv) {
         get_command(fd,argv[1]);
     } else if (!strcasecmp(argv[0],"rm") && argc == 2) {
         rm_command(fd,argv[1]);
+    } else if (!strcasecmp(argv[0],"run") && argc == 2) {
+        run_command(fd,argv[1]);
     } else {
         fprintf(stderr,"Unsupported command or wrong number of arguments\n");
         exit(1);
