@@ -285,6 +285,7 @@ void print_hex_buf(char *name, void *vb, size_t len) {
 
     for (size_t j = 0 ; j < len; j++) printf("%02x",buf[j]);
     printf("\n");
+    printf("%.*s\n",(int)(len),buf);
 }
 
 /* Consume the output till the given string is encountered
@@ -453,7 +454,6 @@ void put_command(int devfd, const char *path) {
             }
         }
         *p++ = '\'';
-        *p++ = '\n';
 
         /* Write the one-liner needed to push the binary buffer
          * into the file. */
