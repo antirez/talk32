@@ -11,7 +11,10 @@
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/select.h>
+#include <sys/stat.h>
+#include <ctype.h>
 
 #define CTRL_A "\x01"   // Enter raw REPL mode.
 #define CTRL_B "\x02"   // Exit raw REPL mode.
@@ -258,6 +261,7 @@ void enter_raw_repl(int devfd) {
     write_serial(devfd,"\n" CTRL_C,2,1);
     write_serial(devfd,CTRL_C,1,1);
     write_serial(devfd,CTRL_A,1,1);
+    usleep(10000);
 }
 
 /* Read what is pending in the device output buffer. */
@@ -266,8 +270,20 @@ void consume_pending_output(int devfd) {
     while(read_serial(devfd,buf,sizeof(buf)-1,0,1) != 0);
 }
 
+/* Debugging function to print buffers. */
+void print_hex_buf(char *name, void *vb, size_t len) {
+    char *buf = vb;
+    printf("%s:[", name);
+    for (size_t j = 0 ; j < len; j++)
+        printf("%c",isalpha(buf[j]) ? buf[j] : '.');
+    printf("] ");
+
+    for (size_t j = 0 ; j < len; j++) printf("%02x",buf[j]);
+    printf("\n");
+}
+
 /* Consume the output till the given string is encountered
- * at *the end* of the output from the serial. */
+ * at the end of the output we receive from the serial port. */
 void consume_until_match(int devfd, char *match) {
     char buf[1024];
     char *p = buf;
@@ -283,14 +299,25 @@ void consume_until_match(int devfd, char *match) {
 
         len += nread;
         p += nread;
-        if (len >= matchlen && memcmp(p-matchlen,match,matchlen) == 0) return;
+
+        /* Debbugging messages for when things go odd with the
+         * chat wth MicroPython. */
+        if (0) {
+            print_hex_buf("PATTERN", match, strlen(match));
+            print_hex_buf("READ", p-nread, nread);
+            print_hex_buf("BUF", buf, len);
+            print_hex_buf("LAST", buf+len-matchlen, matchlen);
+        }
+
+        if (len >= matchlen && memcmp(buf+len-matchlen,match,matchlen) == 0)
+            return;
 
         /* If we consumed all the buffer, we need to restart with
          * enough bytes at the start to be able to match the string. */
         if (len == sizeof(buf)) {
-             len = matchlen-1;
-             memmove(buf,p-len,len);
-             p = buf+len;
+            len = matchlen-1;
+            memmove(buf,p-len,len);
+            p = buf+len;
         }
     }
 }
@@ -331,7 +358,6 @@ void show_program_output(int devfd) {
 /* Implements the "ls" command -- list files. */
 void ls_command(int devfd, const char *path) {
     enter_raw_repl(devfd);
-    usleep(10000);
     consume_pending_output(devfd);
     char buf[1024];
     const char *program =
@@ -343,6 +369,101 @@ void ls_command(int devfd, const char *path) {
     write_serial(devfd,buf,proglen,1);
     consume_until_match(devfd,"OK");
     show_program_output(devfd);
+}
+
+/* Implements the "put" command -- uploads a local file to
+ * the device, by sending REPL commands to populate an open
+ * file. */
+void put_command(int devfd, const char *path) {
+    struct stat sbuf;
+    if (stat(path,&sbuf)) {
+        perror("Accessing the local file");
+        exit(1);
+    }
+
+    if (!(sbuf.st_mode & S_IFREG)) {
+        fprintf(stderr,"This utility can only upload single regular files.");
+        exit(1);
+    }
+
+    /* Get size and base name. */
+    size_t size = sbuf.st_size;
+    const char *base = strrchr(path,'/');
+    if (base) {
+        base++;
+    } else {
+        base = path;
+    }
+
+    int fd = open(path, O_RDONLY);
+    if (fd == -1) {
+        perror("Opening the local file");
+        exit(1);
+    }
+
+    enter_raw_repl(devfd);
+
+    /* To start, let's create a file descriptor in the device
+     * side. */
+    char progbuf[1024];
+    const char *open_program = "f = open('%s','wb')\n" CTRL_D;
+    size_t proglen = snprintf(progbuf,sizeof(progbuf),open_program,base);
+    write_serial(devfd,progbuf,proglen,1);
+    consume_until_match(devfd,CTRL_D CTRL_D ">");
+
+    printf("File opened on the device side\n");
+
+    /* Now transfer the file piece by piece. Note that we have
+     * two buffers. In 'buf' we read the file. In 'bin' we create
+     * a Python binary representation of the file. Users are going
+     * to transfer Python programs, mostly, so we only escape what
+     * can't be represented just sending the single character. Our
+     * serial bandwidth is very similar.
+     *
+     * Note that a byte, if quoted, becomes \xff, four bytes, so
+     * our 'bin' buffer is 4 times bigger, and has some extra space
+     * for null term and "b'" and final "'". */
+    unsigned char buf[256];
+    char bin[sizeof(buf)*4+3];
+    size_t nread;
+    while((nread = read(fd,buf,sizeof(buf))) > 0) {
+        char *p = bin;
+        p[0] = 'b'; p[1] = '\'';    // Python binary type literal: b'...
+        p += 2;
+        for (size_t j = 0; j < nread; j++) {
+            const char *hex = "0123456789abcdef";
+            if (isprint(buf[j]) && buf[j] != '\'' && buf[j] != '\\') {
+                *p++ = buf[j];
+            } else {
+                p[0] = '\\'; /* \x.. */
+                p[1] = 'x';
+                p[2] = hex[(buf[j] >> 4) & 0xf];
+                p[3] = hex[buf[j] & 0xf];
+                p += 4;
+            }
+        }
+        *p++ = '\'';
+
+        /* Write the one-liner needed to push the binary buffer
+         * into the file. */
+        const char *write_program = "f.write(";
+        write_serial(devfd,write_program,strlen(write_program),1);
+        write_serial(devfd,(char*)bin,p-bin,1);
+        write_serial(devfd,")\n" CTRL_D,3,1);
+        consume_until_match(devfd,CTRL_D CTRL_D ">");
+        printf("."); fflush(stdout);
+    }
+
+    printf("Closing file...\n");
+
+    /* Close file on device. */
+    const char *close_program = "f.close()\n" CTRL_D;
+    write_serial(devfd,close_program,strlen(close_program),1);
+    consume_until_match(devfd,CTRL_D CTRL_D ">");
+
+    /* And local file, too. */
+    close(fd);
+    printf("%d bytes written\n", (int)size);
 }
 
 int main(int argc, char **argv) {
@@ -376,6 +497,8 @@ int main(int argc, char **argv) {
             ls_command(fd,".");
         else
             ls_command(fd,argv[1]);
+    } else if (!strcasecmp(argv[0],"put") && argc == 2) {
+        put_command(fd,argv[1]);
     } else {
         fprintf(stderr,"Unsupported command or wrong number of arguments\n");
         exit(1);
