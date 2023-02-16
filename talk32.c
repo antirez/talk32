@@ -21,11 +21,15 @@
 #define CTRL_C "\x03"   // Stop program.
 #define CTRL_D "\x04"   // Soft restart device.
 
+void print_hex_buf(char *name, void *vb, size_t len);
+void consume_until_match(int devfd, char *match, char *retry_message);
+
 /* We need to rememver the terminal setup when in REPL mode. And at exit
  * we need to restore them, or the user terminal would be left in a bad
  * state and would require a manual "reset". */
 struct termios orig_termios; /* In order to restore at exit.*/
 int raw_mode_is_set = 0;
+int debug_mode = 0;
 
 /* Setup the file descriptor 'fd' to be used as a serial port
  * with the usual settings (that is what works with ESP32) and
@@ -169,6 +173,18 @@ fatal:
     return -1;
 }
 
+/* Debugging function to print buffers. */
+void print_hex_buf(char *name, void *vb, size_t len) {
+    char *buf = vb;
+    printf("%s:[", name);
+    for (size_t j = 0 ; j < len; j++)
+        printf("%c",isprint(buf[j]) ? buf[j] : '.');
+    printf("] ");
+
+    for (size_t j = 0 ; j < len; j++) printf("%02x",buf[j]);
+    printf("\n");
+}
+
 /* Open and configure the serial port to talk with the ESP32.
  * Return the file descriptor. On error exits. */
 int open_esp32(char *dev) {
@@ -256,9 +272,23 @@ void repl_command(int devfd) {
     }
 }
 
+/* Read what is pending in the device output buffer. */
+void consume_pending_output(int devfd) {
+    char buf[1024];
+    size_t nread;
+    while((nread = read_serial(devfd,buf,sizeof(buf)-1,0,1)) > 0) {
+        if (debug_mode) print_hex_buf("DISCARD",buf,nread);
+    }
+}
+
 /* Set the device in MicroPython raw REPL mode. */
 void enter_raw_repl(int devfd) {
-    write_serial(devfd,"\n" CTRL_C,2,1);
+    /* To make things more reproducible, exit the raw
+     * repl in case we are in such state. This way we will
+     * be able to match the normal mode MicroPython prompt. */
+    write_serial(devfd,CTRL_C,1,1);
+    write_serial(devfd,CTRL_B,1,1);
+    consume_until_match(devfd,">>> ",CTRL_C CTRL_B);
     write_serial(devfd,CTRL_C,1,1);
     write_serial(devfd,CTRL_A,1,1);
     usleep(10000);
@@ -269,50 +299,46 @@ void exit_raw_repl(int devfd) {
     write_serial(devfd,CTRL_B,1,1);
 }
 
-/* Read what is pending in the device output buffer. */
-void consume_pending_output(int devfd) {
-    char buf[1024];
-    while(read_serial(devfd,buf,sizeof(buf)-1,0,1) != 0);
-}
-
-/* Debugging function to print buffers. */
-void print_hex_buf(char *name, void *vb, size_t len) {
-    char *buf = vb;
-    printf("%s:[", name);
-    for (size_t j = 0 ; j < len; j++)
-        printf("%c",isprint(buf[j]) ? buf[j] : '.');
-    printf("] ");
-
-    for (size_t j = 0 ; j < len; j++) printf("%02x",buf[j]);
-    printf("\n");
-    printf("%.*s\n",(int)(len),buf);
-}
-
 /* Consume the output till the given string is encountered
- * at the end of the output we receive from the serial port. */
-void consume_until_match(int devfd, char *match) {
+ * at the end of the output we receive from the serial port.
+ *
+ * If 'retry_message' is not NULL, at every timeout the
+ * specified string is set to the serial. This is useful
+ * in timing-dependent setups like the initial connection with
+ * certain ESP32 boards, that will not listen to inputs for
+ * some time. */
+void consume_until_match(int devfd, char *match, char *retry_message) {
     char buf[1024];
     char *p = buf;
     size_t len = 0;
     size_t matchlen = strlen(match);
     size_t nread;
+
+    if (debug_mode) print_hex_buf("PAT", match, strlen(match));
     while(1) {
-        nread = read_serial(devfd,p,sizeof(buf)-len,0,1);
+        /* We need to read one byte each time, to avoid consuming part
+         * of the output we want to preserve, after the pattern. */
+        char byte[1];
+        nread = read_serial(devfd,byte,1,0,1);
         if (nread <= 0) {
-            usleep(10000);
+            if (debug_mode) {
+                printf("~");
+                fflush(stdout);
+            }
+            if (retry_message)
+                write_serial(devfd,retry_message,strlen(retry_message),1);
+            usleep(100000);
             continue;
         }
 
-        len += nread;
-        p += nread;
+        *p++ = byte[0];
+        len++;
 
         /* Debbugging messages for when things go odd with the
          * chat wth MicroPython. */
-        if (0) {
-            print_hex_buf("PATTERN", match, strlen(match));
-            print_hex_buf("READ", p-nread, nread);
-            print_hex_buf("BUF", buf, len);
-            print_hex_buf("LAST", buf+len-matchlen, matchlen);
+        if (debug_mode) {
+            print_hex_buf("PAT-BUF", buf, len);
+            print_hex_buf("PAT-LAST", buf+len-matchlen, matchlen);
         }
 
         if (len >= matchlen && memcmp(buf+len-matchlen,match,matchlen) == 0)
@@ -373,7 +399,7 @@ void ls_command(int devfd, const char *path) {
         CTRL_D;
     size_t proglen = snprintf(buf,sizeof(buf),program,path);
     write_serial(devfd,buf,proglen,1);
-    consume_until_match(devfd,"OK");
+    consume_until_match(devfd,"OK",NULL);
     show_program_output(devfd);
     exit_raw_repl(devfd);
 }
@@ -416,7 +442,7 @@ void put_command(int devfd, const char *path) {
     const char *open_program = "f = open('%s','wb')\n" CTRL_D;
     size_t proglen = snprintf(progbuf,sizeof(progbuf),open_program,base);
     write_serial(devfd,progbuf,proglen,1);
-    consume_until_match(devfd,CTRL_D CTRL_D ">");
+    consume_until_match(devfd,CTRL_D CTRL_D ">",NULL);
 
     printf("File opened on the device side\n");
 
@@ -462,7 +488,7 @@ void put_command(int devfd, const char *path) {
         // print_hex_buf("BIN",bin,(p-bin));
         write_serial(devfd,(char*)bin,p-bin,1);
         write_serial(devfd,")\n" CTRL_D,3,1);
-        consume_until_match(devfd,CTRL_D CTRL_D ">");
+        consume_until_match(devfd,CTRL_D CTRL_D ">",NULL);
         printf("."); fflush(stdout);
     }
 
@@ -471,7 +497,7 @@ void put_command(int devfd, const char *path) {
     /* Close file on device. */
     const char *close_program = "f.close()\n" CTRL_D;
     write_serial(devfd,close_program,strlen(close_program),1);
-    consume_until_match(devfd,CTRL_D CTRL_D ">");
+    consume_until_match(devfd,CTRL_D CTRL_D ">",NULL);
 
     /* And local file, too. */
     close(fd);
@@ -498,7 +524,7 @@ void rm_command(int devfd, const char *path) {
         CTRL_D;
     size_t proglen = snprintf(buf,sizeof(buf),program,path);
     write_serial(devfd,buf,proglen,1);
-    consume_until_match(devfd,"OK");
+    consume_until_match(devfd,"OK",NULL);
     exit_raw_repl(devfd);
 }
 
@@ -535,8 +561,8 @@ void run_command(int devfd, const char *path) {
 
 int main(int argc, char **argv) {
     if (argc < 3 || !strcmp(argv[2],"help")) {
-        fprintf(stderr,"Usage: %s /dev/... <command> <args>\n"
-           "Available commands:\n"
+        fprintf(stderr,"Usage: %s /dev/... [--debug] <command> <args>\n"
+            "Available commands:\n"
             "    repl            -- Start the MicroPython REPL\n"
             "    ls | ls <dir>   -- Show files inside the device\n"
             "    put <filename>  -- Upload filename to device\n"
@@ -544,8 +570,10 @@ int main(int argc, char **argv) {
             "    rm  <filename>  -- Remove filename from device\n"
             "    run <filename>  -- Run local Python file on the device\n"
             "    reset           -- Soft reset the device\n"
-            "    help            -- Shows this help\n",
-            argv[0]);
+            "    help            -- Shows this help\n"
+            "\n"
+            "Example: talk32 /dev/myserial0 put main.py\n"
+            ,argv[0]);
         exit(1);
     }
 
@@ -554,6 +582,13 @@ int main(int argc, char **argv) {
     /* Skip program name and device port. */
     argv += 2;
     argc -= 2;
+
+    /* Enable debugging if the first argument is --debug */
+    if (!strcasecmp(argv[0],"--debug")) {
+        debug_mode = 1;
+        argv++;
+        argc--;
+    }
 
     /* Parse arguments. */
     if (!strcasecmp(argv[0],"reset")) {
