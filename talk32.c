@@ -21,16 +21,20 @@
 #define CTRL_C "\x03"   // Stop program.
 #define CTRL_D "\x04"   // Soft restart device.
 
+/* Global state. */
+int raw_mode_is_set = 0;
+int debug_mode = 0;
+
+/* Prototypes. */
 void print_hex_buf(char *name, void *vb, size_t len);
 void consume_until_match(int devfd, char *match, char *retry_message);
+
+/* ========================= SERIAL / TTY handling ========================== */
 
 /* We need to rememver the terminal setup when in REPL mode. And at exit
  * we need to restore them, or the user terminal would be left in a bad
  * state and would require a manual "reset". */
 struct termios orig_termios; /* In order to restore at exit.*/
-int raw_mode_is_set = 0;
-int debug_mode = 0;
-
 /* Setup the file descriptor 'fd' to be used as a serial port
  * with the usual settings (that is what works with ESP32) and
  * the specified baud rate speed. */
@@ -173,18 +177,6 @@ fatal:
     return -1;
 }
 
-/* Debugging function to print buffers. */
-void print_hex_buf(char *name, void *vb, size_t len) {
-    char *buf = vb;
-    printf("%s:[", name);
-    for (size_t j = 0 ; j < len; j++)
-        printf("%c",isprint(buf[j]) ? buf[j] : '.');
-    printf("] ");
-
-    for (size_t j = 0 ; j < len; j++) printf("%02x",buf[j]);
-    printf("\n");
-}
-
 /* Open and configure the serial port to talk with the ESP32.
  * Return the file descriptor. On error exits. */
 int open_esp32(char *dev) {
@@ -197,6 +189,139 @@ int open_esp32(char *dev) {
     setup_serial_port(fd, B115200);
     return fd;
 }
+
+/* =========================== Utility functions ============================ */
+
+/* Debugging function to print buffers. */
+void print_hex_buf(char *name, void *vb, size_t len) {
+    char *buf = vb;
+    printf("%s:[", name);
+    for (size_t j = 0 ; j < len; j++)
+        printf("%c",isprint(buf[j]) ? buf[j] : '.');
+    printf("] ");
+
+    for (size_t j = 0 ; j < len; j++) printf("%02x",buf[j]);
+    printf("\n");
+}
+
+/* Read what is pending in the device output buffer. */
+void consume_pending_output(int devfd) {
+    char buf[1024];
+    size_t nread;
+    while((nread = read_serial(devfd,buf,sizeof(buf)-1,0,1)) > 0) {
+        if (debug_mode) print_hex_buf("DISCARD",buf,nread);
+    }
+}
+
+/* Consume the output till the given string is encountered
+ * at the end of the output we receive from the serial port.
+ *
+ * If 'retry_message' is not NULL, at every timeout the
+ * specified string is set to the serial. This is useful
+ * in timing-dependent setups like the initial connection with
+ * certain ESP32 boards, that will not listen to inputs for
+ * some time. */
+void consume_until_match(int devfd, char *match, char *retry_message) {
+    char buf[1024];
+    char *p = buf;
+    size_t len = 0;
+    size_t matchlen = strlen(match);
+    size_t nread;
+
+    if (debug_mode) print_hex_buf("PAT", match, strlen(match));
+    while(1) {
+        /* We need to read one byte each time, to avoid consuming part
+         * of the output we want to preserve, after the pattern. */
+        char byte[1];
+        nread = read_serial(devfd,byte,1,0,1);
+        if (nread <= 0) {
+            if (debug_mode) {
+                printf("~");
+                fflush(stdout);
+            }
+            if (retry_message)
+                write_serial(devfd,retry_message,strlen(retry_message),1);
+            usleep(100000);
+            continue;
+        }
+
+        *p++ = byte[0];
+        len++;
+
+        /* Debbugging messages for when things go odd with the
+         * chat wth MicroPython. */
+        if (debug_mode) {
+            print_hex_buf("PAT-BUF", buf, len);
+            print_hex_buf("PAT-LAST", buf+len-matchlen, matchlen);
+        }
+
+        if (len >= matchlen && memcmp(buf+len-matchlen,match,matchlen) == 0)
+            return;
+
+        /* If we consumed all the buffer, we need to restart with
+         * enough bytes at the start to be able to match the string. */
+        if (len == sizeof(buf)) {
+            len = matchlen-1;
+            memmove(buf,p-len,len);
+            p = buf+len;
+        }
+    }
+}
+
+/* ========================= MicroPython protocol =========================== */
+
+/* Set the device in MicroPython raw REPL mode. */
+void enter_raw_repl(int devfd) {
+    /* To make things more reproducible, exit the raw
+     * repl in case we are in such state. This way we will
+     * be able to match the normal mode MicroPython prompt. */
+    write_serial(devfd,CTRL_C,1,1);
+    write_serial(devfd,CTRL_B,1,1);
+    consume_until_match(devfd,">>> ",CTRL_C CTRL_B);
+    write_serial(devfd,CTRL_C,1,1);
+    write_serial(devfd,CTRL_A,1,1);
+    usleep(10000);
+}
+
+/* Exit from raw REPL mode. */
+void exit_raw_repl(int devfd) {
+    write_serial(devfd,CTRL_B,1,1);
+}
+
+/* Show the program output, returning after a few read timeouts. */
+void show_program_output(int devfd) {
+    char buf[1024];
+    char last[2] = {0};
+    ssize_t nread;
+    int timeouts_max = 10;
+    while(1) {
+        nread = read_serial(devfd,buf,sizeof(buf)-1,0,1);
+
+        /* Try to remember the last two bytes received: when we get
+         * the first timeout, if they are "\x04>" then it's the RAW
+         * REPL prompt, and we can return ASAP, avoiding any delay. */
+        if (nread >= 2) {
+            last[0] = buf[nread-2];
+            last[1] = buf[nread-1];
+        } else if (nread == 1) {
+            last[0] = last[1];
+            last[1] = buf[0];
+        }
+
+        /* Avoid showing the raw prompt to the user. */
+        if (last[0] == 0x04 && last[1] == '>' && nread >= 2) nread -= 2;
+
+        if (nread) {
+            write(STDOUT_FILENO,buf,nread);
+        } else {
+            if (last[0] == 0x04 && last[1] == '>') return;
+            if (timeouts_max-- == 0) return;
+            usleep(100000);
+        }
+    }
+}
+
+/* ======================= Commands implementations ========================= */
 
 /* REPL mode. Read from both the terminal and the user. Writes what
  * we get from the stdin to the serial, and writes what we get
@@ -268,121 +393,6 @@ void repl_command(int devfd) {
                 }
             }
             write_serial(devfd,buf,nread,1);
-        }
-    }
-}
-
-/* Read what is pending in the device output buffer. */
-void consume_pending_output(int devfd) {
-    char buf[1024];
-    size_t nread;
-    while((nread = read_serial(devfd,buf,sizeof(buf)-1,0,1)) > 0) {
-        if (debug_mode) print_hex_buf("DISCARD",buf,nread);
-    }
-}
-
-/* Set the device in MicroPython raw REPL mode. */
-void enter_raw_repl(int devfd) {
-    /* To make things more reproducible, exit the raw
-     * repl in case we are in such state. This way we will
-     * be able to match the normal mode MicroPython prompt. */
-    write_serial(devfd,CTRL_C,1,1);
-    write_serial(devfd,CTRL_B,1,1);
-    consume_until_match(devfd,">>> ",CTRL_C CTRL_B);
-    write_serial(devfd,CTRL_C,1,1);
-    write_serial(devfd,CTRL_A,1,1);
-    usleep(10000);
-}
-
-/* Exit from raw REPL mode. */
-void exit_raw_repl(int devfd) {
-    write_serial(devfd,CTRL_B,1,1);
-}
-
-/* Consume the output till the given string is encountered
- * at the end of the output we receive from the serial port.
- *
- * If 'retry_message' is not NULL, at every timeout the
- * specified string is set to the serial. This is useful
- * in timing-dependent setups like the initial connection with
- * certain ESP32 boards, that will not listen to inputs for
- * some time. */
-void consume_until_match(int devfd, char *match, char *retry_message) {
-    char buf[1024];
-    char *p = buf;
-    size_t len = 0;
-    size_t matchlen = strlen(match);
-    size_t nread;
-
-    if (debug_mode) print_hex_buf("PAT", match, strlen(match));
-    while(1) {
-        /* We need to read one byte each time, to avoid consuming part
-         * of the output we want to preserve, after the pattern. */
-        char byte[1];
-        nread = read_serial(devfd,byte,1,0,1);
-        if (nread <= 0) {
-            if (debug_mode) {
-                printf("~");
-                fflush(stdout);
-            }
-            if (retry_message)
-                write_serial(devfd,retry_message,strlen(retry_message),1);
-            usleep(100000);
-            continue;
-        }
-
-        *p++ = byte[0];
-        len++;
-
-        /* Debbugging messages for when things go odd with the
-         * chat wth MicroPython. */
-        if (debug_mode) {
-            print_hex_buf("PAT-BUF", buf, len);
-            print_hex_buf("PAT-LAST", buf+len-matchlen, matchlen);
-        }
-
-        if (len >= matchlen && memcmp(buf+len-matchlen,match,matchlen) == 0)
-            return;
-
-        /* If we consumed all the buffer, we need to restart with
-         * enough bytes at the start to be able to match the string. */
-        if (len == sizeof(buf)) {
-            len = matchlen-1;
-            memmove(buf,p-len,len);
-            p = buf+len;
-        }
-    }
-}
-
-/* Show the program output, returning after a few read timeouts. */
-void show_program_output(int devfd) {
-    char buf[1024];
-    char last[2] = {0};
-    ssize_t nread;
-    int timeouts_max = 10;
-    while(1) {
-        nread = read_serial(devfd,buf,sizeof(buf)-1,0,1);
-
-        /* Try to remember the last two bytes received: when we get
-         * the first timeout, if they are "\x04>" then it's the RAW
-         * REPL prompt, and we can return ASAP, avoiding any delay. */
-        if (nread >= 2) {
-            last[0] = buf[nread-2];
-            last[1] = buf[nread-1];
-        } else if (nread == 1) {
-            last[0] = last[1];
-            last[1] = buf[0];
-        }
-
-        /* Avoid showing the raw prompt to the user. */
-        if (last[0] == 0x04 && last[1] == '>' && nread >= 2) nread -= 2;
-
-        if (nread) {
-            write(STDOUT_FILENO,buf,nread);
-        } else {
-            if (last[0] == 0x04 && last[1] == '>') return;
-            if (timeouts_max-- == 0) return;
-            usleep(100000);
         }
     }
 }
@@ -558,6 +568,8 @@ void run_command(int devfd, const char *path) {
     exit_raw_repl(devfd);
     close(fd);
 }
+
+/* ================================ Main ==================================== */
 
 int main(int argc, char **argv) {
     if (argc < 3 || !strcmp(argv[2],"help")) {
