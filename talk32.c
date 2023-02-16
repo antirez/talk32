@@ -280,7 +280,7 @@ void print_hex_buf(char *name, void *vb, size_t len) {
     char *buf = vb;
     printf("%s:[", name);
     for (size_t j = 0 ; j < len; j++)
-        printf("%c",isalpha(buf[j]) ? buf[j] : '.');
+        printf("%c",isprint(buf[j]) ? buf[j] : '.');
     printf("] ");
 
     for (size_t j = 0 ; j < len; j++) printf("%02x",buf[j]);
