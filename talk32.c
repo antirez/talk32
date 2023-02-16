@@ -466,7 +466,7 @@ void put_command(int devfd, const char *path) {
         printf("."); fflush(stdout);
     }
 
-    printf("Closing file...\n");
+    printf("\nClosing file...\n");
 
     /* Close file on device. */
     const char *close_program = "f.close()\n" CTRL_D;
