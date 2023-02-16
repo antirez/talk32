@@ -264,6 +264,11 @@ void enter_raw_repl(int devfd) {
     usleep(10000);
 }
 
+/* Exit from raw REPL mode. */
+void exit_raw_repl(int devfd) {
+    write_serial(devfd,CTRL_B,1,1);
+}
+
 /* Read what is pending in the device output buffer. */
 void consume_pending_output(int devfd) {
     char buf[1024];
@@ -369,6 +374,7 @@ void ls_command(int devfd, const char *path) {
     write_serial(devfd,buf,proglen,1);
     consume_until_match(devfd,"OK");
     show_program_output(devfd);
+    exit_raw_repl(devfd);
 }
 
 /* Implements the "put" command -- uploads a local file to
@@ -464,6 +470,13 @@ void put_command(int devfd, const char *path) {
     /* And local file, too. */
     close(fd);
     printf("%d bytes written\n", (int)size);
+    exit_raw_repl(devfd);
+}
+
+void get_command(int devfd, const char *path) {
+    ((void) devfd);
+    ((void) path);
+    printf("Sorry, not yet implemented.\n");
 }
 
 int main(int argc, char **argv) {
@@ -488,6 +501,7 @@ int main(int argc, char **argv) {
 
     /* Parse arguments. */
     if (!strcasecmp(argv[0],"reset")) {
+        exit_raw_repl(fd);
         char *cmd = CTRL_C "\r\n" CTRL_C CTRL_D;
         write_serial(fd,cmd,strlen(cmd),1);
     } else if (!strcasecmp(argv[0],"repl")) {
@@ -499,6 +513,8 @@ int main(int argc, char **argv) {
             ls_command(fd,argv[1]);
     } else if (!strcasecmp(argv[0],"put") && argc == 2) {
         put_command(fd,argv[1]);
+    } else if (!strcasecmp(argv[0],"get") && argc == 2) {
+        get_command(fd,argv[1]);
     } else {
         fprintf(stderr,"Unsupported command or wrong number of arguments\n");
         exit(1);
