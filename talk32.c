@@ -5,7 +5,7 @@
  */
 
 #include <errno.h>
-#include <fcntl.h> 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -485,6 +485,23 @@ void get_command(int devfd, const char *path) {
     printf("Sorry, not yet implemented.\n");
 }
 
+/* Implements the "rm" command -- remove a file. */
+void rm_command(int devfd, const char *path) {
+    enter_raw_repl(devfd);
+    consume_pending_output(devfd);
+    char buf[1024];
+    const char *program =
+        "import os\n"
+        "try:\n"
+        "    os.remove(\"%s\")\n"
+        "except OSError: pass\n"
+        CTRL_D;
+    size_t proglen = snprintf(buf,sizeof(buf),program,path);
+    write_serial(devfd,buf,proglen,1);
+    consume_until_match(devfd,"OK");
+    exit_raw_repl(devfd);
+}
+
 int main(int argc, char **argv) {
     if (argc < 3 || !strcmp(argv[2],"help")) {
         fprintf(stderr,"Usage: %s /dev/... <command> <args>\n"
@@ -493,6 +510,7 @@ int main(int argc, char **argv) {
             "    ls | ls <dir>   -- Show files inside the device\n"
             "    put <filename>  -- Upload filename to device\n"
             "    get <filename>  -- Download filename from device\n"
+            "    rm <filename>   -- Remove filename from device\n"
             "    reset           -- Soft reset the device\n"
             "    help            -- Shows this help\n",
             argv[0]);
@@ -521,6 +539,8 @@ int main(int argc, char **argv) {
         put_command(fd,argv[1]);
     } else if (!strcasecmp(argv[0],"get") && argc == 2) {
         get_command(fd,argv[1]);
+    } else if (!strcasecmp(argv[0],"rm") && argc == 2) {
+        rm_command(fd,argv[1]);
     } else {
         fprintf(stderr,"Unsupported command or wrong number of arguments\n");
         exit(1);
