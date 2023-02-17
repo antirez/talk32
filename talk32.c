@@ -562,7 +562,7 @@ void run_command(int devfd, const char *path) {
 
     /* Program transferred, hopefully -- exeute it. */
     write_serial(devfd,CTRL_D,1,1); // Ctrl+D will execute the program
-    read_serial(devfd,buf,2,1,1); // Consume "OK"
+    consume_until_match(devfd, "OK", NULL);
     show_program_output(devfd);
 
     exit_raw_repl(devfd);
