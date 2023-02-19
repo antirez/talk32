@@ -546,7 +546,7 @@ void get_command(int devfd, const char *path) {
         fprintf(stderr,"Wrong file name or other system error.\n");
         exit(1);
     }
-    read_serial(devfd,(char*)&left_len,4,1,1);
+    read_serial(devfd,(char*)&left_len,4,1,1); // Assume a little endian world.
 
     /* Then read the bytes. */
     ssize_t nread;
