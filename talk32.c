@@ -293,7 +293,7 @@ void show_program_output(int devfd) {
     char buf[1024];
     char last[2] = {0};
     ssize_t nread;
-    int timeouts_max = 10;
+    int timeouts_max = 30;
     while(1) {
         nread = read_serial(devfd,buf,sizeof(buf)-1,0,1);
 
@@ -516,9 +516,53 @@ void put_command(int devfd, const char *path) {
 }
 
 void get_command(int devfd, const char *path) {
-    ((void) devfd);
-    ((void) path);
-    printf("Sorry, not yet implemented.\n");
+    enter_raw_repl(devfd);
+    consume_pending_output(devfd);
+    char buf[1024];
+
+    /* Note that the plain sys.stdout.write() adds without any
+     * sensible reason I can think of a \r for each \n, even if
+     * it is called *write*, like write(2), and is under os...
+     * So we use sys.stdout.buffer.write(). */
+    const char *program =
+        "import sys, os, struct\n"
+        "l=struct.pack('<L',os.stat(\"%s\")[6])\n"
+        "sys.stdout.write(b'FLEN'+l)\n"
+        "f=open(\"%s\",'rb')\n"
+        "while True:\n"
+        "    data = f.read(256)\n"
+        "    if len(data) == 0: break\n"
+        "    sys.stdout.buffer.write(data)\n"
+        CTRL_D;
+    size_t proglen = snprintf(buf,sizeof(buf),program,path,path);
+    write_serial(devfd,buf,proglen,1);
+    consume_until_match(devfd,"OK",NULL);
+
+    /* Read how many bytes we have to read... */
+    uint32_t left_len;
+    char magic[4];
+    read_serial(devfd,magic,4,1,1);
+    if (memcmp(magic,"FLEN",4)) {
+        fprintf(stderr,"Wrong file name or other system error.\n");
+        exit(1);
+    }
+    read_serial(devfd,(char*)&left_len,4,1,1);
+
+    /* Then read the bytes. */
+    ssize_t nread;
+    while(left_len > 0) {
+        uint32_t read_len = sizeof(buf);
+        if (read_len > left_len) read_len = left_len;
+        nread = read_serial(devfd,buf,read_len,1,1);
+        if (nread) {
+            write(STDOUT_FILENO,buf,nread);
+            left_len -= nread;
+        } else {
+            break;
+        }
+    }
+
+    exit_raw_repl(devfd);
 }
 
 /* Implements the "rm" command -- remove a file. */

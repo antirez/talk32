@@ -11,4 +11,4 @@ The program goals (nothing yet fully reach) are:
 * Efficient file exchange with the device, especially for large MicroPython projects. Make use of SHA256 into MicroPython, in order to provide file hashes to avoid uploading what is already in sync.
 * Linux and MacOS support.
 
-I reached my minimal goals to replace Ampy in my workflow. There are still things to implement like the "get" subcommand, file hashing to avoid re-transferring, a better "ls" output, and so forth. Please send PRs if you wish, the only contribution guildeline here is: **keep things simple**.
+I reached my minimal goals to replace Ampy in my workflow. There are still things to implement, like file hashing to check that the transfer was ok, and to avoid re-transferring if the file is the same. A better "ls" output, and so forth. Please send PRs if you wish, the only contribution guildeline here is: **keep things simple**.
