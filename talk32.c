@@ -620,14 +620,14 @@ int main(int argc, char **argv) {
     if (argc < 3 || !strcmp(argv[2],"help")) {
         fprintf(stderr,"Usage: %s /dev/... [--debug] <command> <args>\n"
             "Available commands:\n"
-            "    repl            -- Start the MicroPython REPL\n"
-            "    ls | ls <dir>   -- Show files inside the device\n"
-            "    put <filename>  -- Upload filename to device\n"
-            "    get <filename>  -- Download filename from device\n"
-            "    rm  <filename>  -- Remove filename from device\n"
-            "    run <filename>  -- Run local Python file on the device\n"
-            "    reset           -- Soft reset the device\n"
-            "    help            -- Shows this help\n"
+            "    repl                 -- Start the MicroPython REPL\n"
+            "    ls | ls  <dir>       -- Show files inside the device\n"
+            "    put      <filename>  -- Upload filename to device\n"
+            "    get      <filename>  -- Download filename from device\n"
+            "    rm | del <filename>  -- Remove filename from device\n"
+            "    run      <filename>  -- Run local Python file on the device\n"
+            "    reset                -- Soft reset the device\n"
+            "    help                 -- Shows this help\n"
             "\n"
             "Example: talk32 /dev/myserial0 put main.py\n"
             ,argv[0]);
@@ -663,7 +663,9 @@ int main(int argc, char **argv) {
         put_command(fd,argv[1]);
     } else if (!strcasecmp(argv[0],"get") && argc == 2) {
         get_command(fd,argv[1]);
-    } else if (!strcasecmp(argv[0],"rm") && argc == 2) {
+    } else if ((!strcasecmp(argv[0],"rm") ||
+                !strcasecmp(argv[0],"del")) && argc == 2)
+    {
         rm_command(fd,argv[1]);
     } else if (!strcasecmp(argv[0],"run") && argc == 2) {
         run_command(fd,argv[1]);
