@@ -316,7 +316,8 @@ void show_program_output(int devfd) {
             write(STDOUT_FILENO,buf,nread);
         } else {
             if (last[0] == 0x04 && last[1] == '>') return;
-            if (timeouts_max-- == 0) return;
+            if (timeouts_max-- == 0)
+                printf("(Waiting for more output... Press CTRL+C to stop)\n");
             usleep(100000);
         }
     }
