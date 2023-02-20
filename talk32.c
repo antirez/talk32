@@ -15,6 +15,7 @@
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <stdint.h>
 
 #define CTRL_A "\x01"   // Enter raw REPL mode.
 #define CTRL_B "\x02"   // Exit raw REPL mode.
