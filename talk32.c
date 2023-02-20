@@ -406,9 +406,12 @@ void ls_command(int devfd, const char *path) {
     const char *program =
         "import os\n"
         "for f in os.listdir(\"%s\"):\n"
-        "    print(f + ' -- ' + str((os.stat(f)[6])))\n"
+        "    s = os.stat('%s/'+f)\n"
+        "    flen = 0 if s[0] & 16386 else s[6]\n"
+        "    type = '<DIR> ' if s[0] & 16384 else '      '\n"
+        "    print(type + f + ' -- ' + str(flen))\n"
         CTRL_D;
-    size_t proglen = snprintf(buf,sizeof(buf),program,path);
+    size_t proglen = snprintf(buf,sizeof(buf),program,path,path);
     write_serial(devfd,buf,proglen,1);
     consume_until_match(devfd,"OK",NULL);
     show_program_output(devfd);
