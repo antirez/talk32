@@ -459,7 +459,7 @@ void put_command(int devfd, const char *path) {
     write_serial(devfd,progbuf,proglen,1);
     consume_until_match(devfd,CTRL_D CTRL_D ">",NULL);
 
-    printf("File opened on the device side\n");
+    printf("%s: ",path); fflush(stdout);
 
     /* Now transfer the file piece by piece. Note that we have
      * two buffers. In 'buf' we read the file. In 'bin' we create
@@ -507,16 +507,14 @@ void put_command(int devfd, const char *path) {
         printf("."); fflush(stdout);
     }
 
-    printf("\nClosing file...\n");
-
     /* Close file on device. */
     const char *close_program = "f.close()\n" CTRL_D;
     write_serial(devfd,close_program,strlen(close_program),1);
     consume_until_match(devfd,CTRL_D CTRL_D ">",NULL);
+    printf("OK (%d bytes)\n", (int)size);
 
     /* And local file, too. */
     close(fd);
-    printf("%d bytes written\n", (int)size);
     exit_raw_repl(devfd);
 }
 
@@ -627,18 +625,18 @@ void run_command(int devfd, const char *path) {
 int main(int argc, char **argv) {
     if (argc < 3 || !strcmp(argv[2],"help")) {
         fprintf(stderr,"Usage: %s /dev/... [--debug] <command> <args>\n"
-            "Available commands:\n"
-            "    repl                 -- Start the MicroPython REPL\n"
-            "    ls | ls  <dir>       -- Show files inside the device\n"
-            "    put      <filename>  -- Upload filename to device\n"
-            "    get      <filename>  -- Download filename from device\n"
-            "    rm | del <filename>  -- Remove filename from device\n"
-            "    mkdir    <dir>       -- Create directory on the device\n"
-            "    run      <filename>  -- Run local Python file on the device\n"
-            "    reset                -- Soft reset the device\n"
-            "    help                 -- Shows this help\n"
-            "\n"
-            "Example: talk32 /dev/myserial0 put main.py\n"
+"Available commands:\n"
+"    repl                              -- Start the MicroPython REPL\n"
+"    ls | ls  <dir>                    -- Show files inside the device\n"
+"    put      <filename> [file2 ...]   -- Upload filename to device\n"
+"    get      <filename>               -- Download filename from device\n"
+"    rm | del <filename>               -- Remove filename from device\n"
+"    mkdir    <dir>                    -- Create directory on the device\n"
+"    run      <filename>               -- Run local Python file on the device\n"
+"    reset                             -- Soft reset the device\n"
+"    help                              -- Shows this help\n"
+"\n"
+"Example: talk32 /dev/myserial0 put main.py\n"
             ,argv[0]);
         exit(1);
     }
@@ -668,8 +666,8 @@ int main(int argc, char **argv) {
             ls_command(fd,".");
         else
             ls_command(fd,argv[1]);
-    } else if (!strcasecmp(argv[0],"put") && argc == 2) {
-        put_command(fd,argv[1]);
+    } else if (!strcasecmp(argv[0],"put") && argc >= 2) {
+        for (int j = 1; j < argc; j++) put_command(fd,argv[j]);
     } else if (!strcasecmp(argv[0],"get") && argc == 2) {
         get_command(fd,argv[1]);
     } else if ((!strcasecmp(argv[0],"rm") ||
