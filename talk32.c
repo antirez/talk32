@@ -422,7 +422,7 @@ void ls_command(int devfd, const char *path) {
 /* Implements the "put" command -- uploads a local file to
  * the device, by sending REPL commands to populate an open
  * file. */
-void put_command(int devfd, const char *path) {
+void put_command(int devfd, const char *path, const char *destdir) {
     struct stat sbuf;
     if (stat(path,&sbuf)) {
         perror("Accessing the local file");
@@ -454,8 +454,11 @@ void put_command(int devfd, const char *path) {
     /* To start, let's create a file descriptor in the device
      * side. */
     char progbuf[1024];
-    const char *open_program = "f = open('%s','wb')\n" CTRL_D;
-    size_t proglen = snprintf(progbuf,sizeof(progbuf),open_program,base);
+    const char *open_program = "f = open('%s%s%s','wb')\n" CTRL_D;
+    size_t proglen = snprintf(progbuf,sizeof(progbuf),open_program,
+        destdir ? destdir : "",
+        destdir ? "/" : "",
+        base);
     write_serial(devfd,progbuf,proglen,1);
     consume_until_match(devfd,CTRL_D CTRL_D ">",NULL);
 
@@ -624,7 +627,7 @@ void run_command(int devfd, const char *path) {
 
 int main(int argc, char **argv) {
     if (argc < 3 || !strcmp(argv[2],"help")) {
-        fprintf(stderr,"Usage: %s /dev/... [--debug] <command> <args>\n"
+        fprintf(stderr,"Usage: %s /dev/... [--debug] [--dir] <command> <args>\n"
 "Available commands:\n"
 "    repl                              -- Start the MicroPython REPL\n"
 "    ls | ls  <dir>                    -- Show files inside the device\n"
@@ -636,12 +639,18 @@ int main(int argc, char **argv) {
 "    reset                             -- Soft reset the device\n"
 "    help                              -- Shows this help\n"
 "\n"
+"Use --dir <dirname> with 'put' to put files into specific directories of the device.\n"
+"\n"
 "Example: talk32 /dev/myserial0 put main.py\n"
+"         talk32 /dev/myserial0 --dir images put file1.png file2.png\n"
+"         talk32 /dev/myserial0 ls\n"
+"         talk32 /dev/myserial0 get somedir/somefile.txt\n"
             ,argv[0]);
         exit(1);
     }
 
     int fd = open_esp32(argv[1]);
+    const char *destdir = NULL;
 
     /* Skip program name and device port. */
     argv += 2;
@@ -652,6 +661,13 @@ int main(int argc, char **argv) {
         debug_mode = 1;
         argv++;
         argc--;
+    }
+
+    /* Specify target directory, for put. */
+    if (!strcasecmp(argv[0],"--dir")) {
+        destdir = argv[1];
+        argv += 2;
+        argc -= 2;
     }
 
     /* Parse arguments. */
@@ -667,7 +683,7 @@ int main(int argc, char **argv) {
         else
             ls_command(fd,argv[1]);
     } else if (!strcasecmp(argv[0],"put") && argc >= 2) {
-        for (int j = 1; j < argc; j++) put_command(fd,argv[j]);
+        for (int j = 1; j < argc; j++) put_command(fd,argv[j],destdir);
     } else if (!strcasecmp(argv[0],"get") && argc == 2) {
         get_command(fd,argv[1]);
     } else if ((!strcasecmp(argv[0],"rm") ||
