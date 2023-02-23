@@ -570,21 +570,21 @@ void get_command(int devfd, const char *path) {
     exit_raw_repl(devfd);
 }
 
-/* Implements the "rm" command -- remove a file. */
-void rm_command(int devfd, const char *path) {
+/* Implements the "rm", "mkdir" commands */
+void simple_file_command(int devfd, const char *command, const char *path) {
     enter_raw_repl(devfd);
     consume_pending_output(devfd);
     char buf[1024];
     const char *program =
         "import os\n"
         "try:\n"
-        "    os.remove(\"%s\")\n"
+        "    os.%s(\"%s\")\n"
         "    print('Done')\n"
         "except OSError as e:\n"
         "    print('Error performing the operation: '+str(e))\n"
         "    pass\n"
         CTRL_D;
-    size_t proglen = snprintf(buf,sizeof(buf),program,path);
+    size_t proglen = snprintf(buf,sizeof(buf),program,command,path);
     write_serial(devfd,buf,proglen,1);
     consume_until_match(devfd,"OK",NULL);
     show_program_output(devfd);
@@ -633,6 +633,7 @@ int main(int argc, char **argv) {
             "    put      <filename>  -- Upload filename to device\n"
             "    get      <filename>  -- Download filename from device\n"
             "    rm | del <filename>  -- Remove filename from device\n"
+            "    mkdir    <dir>       -- Create directory on the device\n"
             "    run      <filename>  -- Run local Python file on the device\n"
             "    reset                -- Soft reset the device\n"
             "    help                 -- Shows this help\n"
@@ -674,7 +675,9 @@ int main(int argc, char **argv) {
     } else if ((!strcasecmp(argv[0],"rm") ||
                 !strcasecmp(argv[0],"del")) && argc == 2)
     {
-        rm_command(fd,argv[1]);
+        simple_file_command(fd,"remove",argv[1]);
+    } else if (!strcasecmp(argv[0],"mkdir") && argc == 2) {
+        simple_file_command(fd,"mkdir",argv[1]);
     } else if (!strcasecmp(argv[0],"run") && argc == 2) {
         run_command(fd,argv[1]);
     } else {
