@@ -579,11 +579,15 @@ void rm_command(int devfd, const char *path) {
         "import os\n"
         "try:\n"
         "    os.remove(\"%s\")\n"
-        "except OSError: pass\n"
+        "    print('Done')\n"
+        "except OSError as e:\n"
+        "    print('Error performing the operation: '+str(e))\n"
+        "    pass\n"
         CTRL_D;
     size_t proglen = snprintf(buf,sizeof(buf),program,path);
     write_serial(devfd,buf,proglen,1);
     consume_until_match(devfd,"OK",NULL);
+    show_program_output(devfd);
     exit_raw_repl(devfd);
 }
 
