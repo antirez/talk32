@@ -422,7 +422,7 @@ void ls_command(int devfd, const char *path) {
 /* Implements the "put" command -- uploads a local file to
  * the device, by sending REPL commands to populate an open
  * file. */
-void put_command(int devfd, const char *path, const char *destdir) {
+void put_command(int devfd, const char *path, const char *destdir, const char *destname) {
     struct stat sbuf;
     if (stat(path,&sbuf)) {
         perror("Accessing the local file");
@@ -436,11 +436,17 @@ void put_command(int devfd, const char *path, const char *destdir) {
 
     /* Get size and base name. */
     size_t size = sbuf.st_size;
-    const char *base = strrchr(path,'/');
-    if (base) {
-        base++;
-    } else {
-        base = path;
+
+    /* If no destination name was given, we just use the
+     * base name of the local file. */
+    if (destname == NULL) {
+        const char *base = strrchr(path,'/');
+        if (base) {
+            base++;
+        } else {
+            base = path;
+        }
+        destname = base;
     }
 
     int fd = open(path, O_RDONLY);
@@ -458,7 +464,7 @@ void put_command(int devfd, const char *path, const char *destdir) {
     size_t proglen = snprintf(progbuf,sizeof(progbuf),open_program,
         destdir ? destdir : "",
         destdir ? "/" : "",
-        base);
+        destname);
     write_serial(devfd,progbuf,proglen,1);
     consume_until_match(devfd,CTRL_D CTRL_D ">",NULL);
 
@@ -627,30 +633,33 @@ void run_command(int devfd, const char *path) {
 
 int main(int argc, char **argv) {
     if (argc < 3 || !strcmp(argv[2],"help")) {
-        fprintf(stderr,"Usage: %s /dev/... [--debug] [--dir] <command> <args>\n"
+        fprintf(stderr,"Usage: %s /dev/... [--debug] [--dir] [--destname] <command> <args>\n"
 "Available commands:\n"
-"    repl                              -- Start the MicroPython REPL\n"
-"    ls | ls  <dir>                    -- Show files inside the device\n"
-"    put      <filename> [file2 ...]   -- Upload filename to device\n"
-"    get      <filename>               -- Download filename from device\n"
-"    rm | del <filename>               -- Remove filename from device\n"
-"    mkdir    <dir>                    -- Create directory on the device\n"
-"    run      <filename>               -- Run local Python file on the device\n"
-"    reset                             -- Soft reset the device\n"
-"    help                              -- Shows this help\n"
+"  repl                              -- Start the MicroPython REPL\n"
+"  ls | ls  <dir>                    -- Show files inside the device\n"
+"  put [--dir] [--destname] <file> [file2 ...] -- Put files into device\n"
+"  get      <filename>               -- Download filename from device\n"
+"  rm | del <filename>               -- Remove filename from device\n"
+"  mkdir    <dir>                    -- Create directory on the device\n"
+"  run      <filename>               -- Run local Python file on the device\n"
+"  reset                             -- Soft reset the device\n"
+"  help                              -- Shows this help\n"
 "\n"
 "Use --dir <dirname> with 'put' to put files into specific directories of the device.\n"
+"Use --destname <filename> with 'put' to set the name the file will have inside the device.\n"
 "\n"
 "Example: talk32 /dev/myserial0 put main.py\n"
 "         talk32 /dev/myserial0 --dir images put file1.png file2.png\n"
 "         talk32 /dev/myserial0 ls\n"
 "         talk32 /dev/myserial0 get somedir/somefile.txt\n"
+"         talk32 /dev/myserial0 --destname data100.bin --dir data put /my/local_file\n"
             ,argv[0]);
         exit(1);
     }
 
     int fd = open_esp32(argv[1]);
     const char *destdir = NULL;
+    const char *destname = NULL;
 
     /* Skip program name and device port. */
     argv += 2;
@@ -670,6 +679,13 @@ int main(int argc, char **argv) {
         argc -= 2;
     }
 
+    /* Specify a different target name, for put. */
+    if (!strcasecmp(argv[0],"--destname")) {
+        destname = argv[1];
+        argv += 2;
+        argc -= 2;
+    }
+
     /* Parse arguments. */
     if (!strcasecmp(argv[0],"reset")) {
         exit_raw_repl(fd);
@@ -683,7 +699,7 @@ int main(int argc, char **argv) {
         else
             ls_command(fd,argv[1]);
     } else if (!strcasecmp(argv[0],"put") && argc >= 2) {
-        for (int j = 1; j < argc; j++) put_command(fd,argv[j],destdir);
+        for (int j = 1; j < argc; j++) put_command(fd,argv[j],destdir,destname);
     } else if (!strcasecmp(argv[0],"get") && argc == 2) {
         get_command(fd,argv[1]);
     } else if ((!strcasecmp(argv[0],"rm") ||
