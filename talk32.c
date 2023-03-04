@@ -80,6 +80,7 @@ int setup_serial_port(int fd, int speed) {
  * recover from errors. */
 size_t write_serial(int fd, const char *buf, size_t len, int exit_on_error) {
     size_t left = len;
+    if (debug_mode) printf("WRITE: %.*s\n",(int)len,buf);
     while(left) {
         ssize_t nwritten = write(fd,buf,left);
         if (nwritten == -1) {
