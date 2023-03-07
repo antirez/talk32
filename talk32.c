@@ -481,7 +481,7 @@ void put_command(int devfd, const char *path, const char *destdir, const char *d
      * Note that a byte, if quoted, becomes \xff, four bytes, so
      * our 'bin' buffer is 4 times bigger, and has some extra space
      * for null term and "b'" and final "'". */
-    unsigned char buf[512];
+    unsigned char buf[256];
     char bin[sizeof(buf)*4+4];
     size_t nread;
     while((nread = read(fd,buf,sizeof(buf))) > 0) {
