@@ -26,7 +26,7 @@
  * However with certain USB-serial drivers, we can't send chunks bigger
  * than a certain amount, or there are buffering issues. So we default
  * to a smaller buffer size, and use the bigger buffer only with --fast. */
-#define PUT_BUF_SIZE_SLOW 64
+#define PUT_BUF_SIZE_SLOW 32
 #define PUT_BUF_SIZE_FAST 256
 
 /* Global state. */
