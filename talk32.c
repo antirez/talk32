@@ -22,9 +22,17 @@
 #define CTRL_C "\x03"   // Stop program.
 #define CTRL_D "\x04"   // Soft restart device.
 
+/* "Put" is implemented concatenating Python strings into a file.
+ * However with certain USB-serial drivers, we can't send chunks bigger
+ * than a certain amount, or there are buffering issues. So we default
+ * to a smaller buffer size, and use the bigger buffer only with --fast. */
+#define PUT_BUF_SIZE_SLOW 64
+#define PUT_BUF_SIZE_FAST 256
+
 /* Global state. */
 int raw_mode_is_set = 0;
 int debug_mode = 0;
+int fast_mode = 0; // Use a larger buffer size for PUT.
 
 /* Prototypes. */
 void print_hex_buf(char *name, void *vb, size_t len);
@@ -32,10 +40,8 @@ void consume_until_match(int devfd, char *match, char *retry_message);
 
 /* ========================= SERIAL / TTY handling ========================== */
 
-/* We need to rememver the terminal setup when in REPL mode. And at exit
- * we need to restore them, or the user terminal would be left in a bad
- * state and would require a manual "reset". */
-struct termios orig_termios; /* In order to restore at exit.*/
+struct termios orig_termios; /* In order to restore terminal at exit. */
+
 /* Setup the file descriptor 'fd' to be used as a serial port
  * with the usual settings (that is what works with ESP32) and
  * the specified baud rate speed. */
@@ -481,10 +487,11 @@ void put_command(int devfd, const char *path, const char *destdir, const char *d
      * Note that a byte, if quoted, becomes \xff, four bytes, so
      * our 'bin' buffer is 4 times bigger, and has some extra space
      * for null term and "b'" and final "'". */
-    unsigned char buf[256];
+    unsigned char buf[PUT_BUF_SIZE_FAST];
+    int buf_size = fast_mode ? PUT_BUF_SIZE_FAST : PUT_BUF_SIZE_SLOW;
     char bin[sizeof(buf)*4+4];
     size_t nread;
-    while((nread = read(fd,buf,sizeof(buf))) > 0) {
+    while((nread = read(fd,buf,buf_size)) > 0) {
         char *p = bin;
         p[0] = 'b'; p[1] = '\'';    // Python binary type literal: b'...
         p += 2;
@@ -634,7 +641,7 @@ void run_command(int devfd, const char *path) {
 
 int main(int argc, char **argv) {
     if (argc < 3 || !strcmp(argv[2],"help")) {
-        fprintf(stderr,"Usage: %s /dev/... [--debug] [--dir] [--destname] <command> <args>\n"
+        fprintf(stderr,"Usage: %s /dev/... [--debug] [--fast] [--dir] [--destname] <command> <args>\n"
 "Available commands:\n"
 "  repl                              -- Start the MicroPython REPL\n"
 "  ls | ls  <dir>                    -- Show files inside the device\n"
@@ -646,8 +653,10 @@ int main(int argc, char **argv) {
 "  reset                             -- Soft reset the device\n"
 "  help                              -- Shows this help\n"
 "\n"
-"Use --dir <dirname> with 'put' to put files into specific directories of the device.\n"
-"Use --destname <filename> with 'put' to set the name the file will have inside the device.\n"
+"Options:\n"
+"   --dir <dirname>        with 'put' to put files into specific directories of the device.\n"
+"   --destname <filename>  with 'put' to set the name the file will have inside the device.\n"
+"   --fast                 use a larger buffer for 'put': does not work well with certain USB-serial drivers.\n"
 "\n"
 "Example: talk32 /dev/myserial0 put main.py\n"
 "         talk32 /dev/myserial0 --dir images put file1.png file2.png\n"
@@ -669,6 +678,13 @@ int main(int argc, char **argv) {
     /* Enable debugging if the first argument is --debug */
     if (!strcasecmp(argv[0],"--debug")) {
         debug_mode = 1;
+        argv++;
+        argc--;
+    }
+
+    /* Enable fast mode (larger PUT buffer). */
+    if (!strcasecmp(argv[0],"--fast")) {
+        fast_mode = 1;
         argv++;
         argc--;
     }
