@@ -547,7 +547,7 @@ void get_command(int devfd, const char *path) {
     const char *program =
         "import sys, os, struct\n"
         "l=struct.pack('<L',os.stat(\"%s\")[6])\n"
-        "sys.stdout.write(b'FLEN'+l)\n"
+        "sys.stdout.buffer.write(b'FLEN'+l)\n"
         "f=open(\"%s\",'rb')\n"
         "while True:\n"
         "    data = f.read(256)\n"
