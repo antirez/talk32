@@ -618,10 +618,14 @@ void run_command(int devfd, const char *path) {
     enter_raw_repl(devfd);
     consume_pending_output(devfd);
 
-    char buf[1024];
+    char buf[128];
     ssize_t nread;
-    while((nread = read(fd,buf,sizeof(buf))) > 0)
+    while((nread = read(fd,buf,sizeof(buf))) > 0) {
         write_serial(devfd,buf,nread,1);
+        printf("."); fflush(stdout);
+        usleep(100000);
+    }
+    printf("\n");
 
     if (nread == -1) {
         perror("Reading from local file for execution");
@@ -629,6 +633,7 @@ void run_command(int devfd, const char *path) {
     }
 
     /* Program transferred, hopefully -- exeute it. */
+    usleep(100000);
     write_serial(devfd,CTRL_D,1,1); // Ctrl+D will execute the program
     consume_until_match(devfd, "OK", NULL);
     show_program_output(devfd);
